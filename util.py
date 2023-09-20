@@ -8,6 +8,10 @@ import math
 from numpy.linalg import eig
 import matplotlib.pyplot as plt
 
+@jax.vmap
+def euclidean(x):
+    return jnp.sqrt(jnp.sum(x**2))
+
 def barrier(p):
     return np.sqrt(p)/(1-p)
 

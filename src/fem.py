@@ -254,7 +254,14 @@ class Segment:
 
     def refine(self, i):
 
-        self.oldu = np.hstack((self.u, self.u[:, np.min(self.EToV[i])].reshape(self.u.shape)))
+        t = self.u[:, i]
+        h = (t[:-1] + t[1:])/2
+        p = len(t) * 2 - 1
+        mix = np.empty(p)
+        mix[::2] = t
+        mix[1::2] = h
+        self.oldu = np.hstack((self.u, mix[len(t)-1:].reshape(-1, 1)))
+        self.oldu[:, i] = mix[:len(t)]
         self.vrh[self.EToV[i][1]][0] = self.K
         self.vrh.append([i, self.K])
         self.VX[self.K+1] = np.sum(self.VX[self.EToV[i]])/2
@@ -297,14 +304,14 @@ class Segment:
             self.levels[m] = self.levels.pop()
         except IndexError:
             self.levels.pop()
-        try:
-            self.vrh[t] = self.vrh.pop()
-        except IndexError:
-            self.vrh.pop()
         for x in self.vrh[t]:
             for y in range(2):
                 if self.EToV[x][y] == self.Nv-1:
                     self.EToV[x][y] = t
+        try:
+            self.vrh[t] = self.vrh.pop()
+        except IndexError:
+            self.vrh.pop()
         self.VX[t] = self.VX[self.Nv-1]
         self.K -= 1
         self.Nv -= 1
@@ -380,14 +387,16 @@ class Graph:
                  graph: ss.spmatrix,
                  coord: np.ndarray = None,
                  potential: Callable[[np.ndarray], float] = lambda x: 1,
+                 eig: int = 0,
                  fun: Callable[[np.ndarray], float] = lambda x: 1,
                  elimit: int = -1,
                  default: np.ndarray = None
                  ) -> None:
         
+        self.eig = eig
+        self.potential = potential
         self.fun = fun
         self.vfun = jax.vmap(fun)
-        self.potential = potential  
         self.vpot = jax.vmap(potential)
         if type(coord) == type(None):
             coord = np.zeros((graph.shape[0], 3))
@@ -528,7 +537,10 @@ class Graph:
         if self.E[min(w, z), n] != 1:
             self.E[min(w, z), n] = 1
         if self.E[max(w, z), n] != -1:
-            self.E[max(w, z), n] = -1  
+            self.E[max(w, z), n] = -1 
+        if self.E[max(w, z), n] == 1:
+            self.E[max[w, z], n] = -1
+            self.E[min[w, z], n] = 1
         
         self.W[n, n] *= 2
         self.D[n, n] /= 2
@@ -577,10 +589,10 @@ class Graph:
             self.V.pop()
         if i != en:
             y = self.E[:, [en]].indices
-            if self.E[y[0], i] != self.E[y[0], en]:
-                self.E[y[0], i] = self.E[y[0], en]
-            if self.E[y[1], i] != self.E[y[1], en]:
-                self.E[y[1], i] = self.E[y[1], en]
+            if self.E[y[0], i] != 1:
+                self.E[y[0], i] = 1
+            if self.E[y[1], i] != -1:
+                self.E[y[1], i] = -1
             if self.E[y[0], en] != 0:
                 self.E[y[0], en] = 0
             if self.E[y[1], en] != 0:
@@ -618,9 +630,12 @@ class Graph:
         f = self.vfun(self.coord[:self.vcnt])
         self.u = ss.linalg.spsolve(self.H, self.M @ f)
         temp = self.u[self.E.indices]
-        self.grad = (temp[::2] - temp[1::2])[:, None] / (self.S[:self.ecnt])
+        self.grad = (temp[1::2] - temp[::2]) / euclidean(self.S[:self.ecnt])
+        self.jumpv = np.abs(-self.E[:self.vcnt, :self.ecnt] @ self.grad)
+        self.jumpe = Eabs[:self.vcnt, :self.ecnt].T @ self.jumpv
+        self.svoj = None
 
-    def calculate_eigen(self, k):
+    def calculate_eigen(self):
 
         self.refill()
         Eabs = np.abs(self.E)
@@ -630,11 +645,16 @@ class Graph:
                           (Eabs @ self.W * Eabs).sum(-1))/6), diags=0, m=(self.E.shape[0], 
                                          self.E.shape[0]), format='csc')
         self.M = M[:self.vcnt, :self.vcnt]
-        self.H = L + self.M
+        self.H = L
         f = self.vfun(self.coord[:self.vcnt])
-        self.u = ss.linalg.eigs(self.H, k=6, M=self.M, sigma=None, which='SM')[1][:, k]
+        self.svoj, self.u = ss.linalg.eigs(self.H, k=10, M=self.M, sigma=None, which='SM')
+        sorted_indices = np.argsort(self.svoj)
+        self.svoj = self.svoj[sorted_indices]
+        self.u = np.real(self.u)[:, sorted_indices][:, self.eig]
         temp = self.u[self.E.indices]
-        self.grad = (temp[::2] - temp[1::2])[:, None] / (self.S[:self.ecnt])
+        self.grad = (temp[1::2] - temp[::2]) / euclidean(self.S[:self.ecnt])
+        self.jumpv = np.abs(-self.E[:self.vcnt, :self.ecnt] @ self.grad)
+        self.jumpe = Eabs[:self.vcnt, :self.ecnt].T @ self.jumpv
         
     def wrap_random(self):
         
@@ -646,6 +666,38 @@ class Graph:
             col = self.E[:, [n]].indices
             
         return n
+    
+    def integrate_difference_eig(self, n: int, event: bool):
+
+        if event:
+            vrhovi = self.E[:, [n]].indices
+            u = np.hstack((self.u, (self.u[vrhovi[0]]+self.u[vrhovi[1]])/2))
+            self.refine(n)
+            self.calculate_eigen()
+            u = self.u - u
+            temp = u[self.E.indices].reshape(2, self.ecnt, order='F')
+            ba = (temp[0] * temp[1]) >= 0
+            vec_arg = np.vstack((temp, self.W.data[:self.ecnt], ba))
+            return jnp.sum(jax.vmap(abs_diff_int, in_axes=(1))(vec_arg))
+        W = np.copy(self.W.data[:self.ecnt])
+        u = np.copy(self.u)
+        E = np.copy(self.E.indices)
+        value_or_false = self.coarsen(n)
+        if not value_or_false:
+            return False
+        v, i, w, z = value_or_false
+        self.calculate_eigen()
+        u2 = np.copy(self.u)
+        try:
+            u2 = np.hstack((u2, u2[v]))
+            u2[v] = (u2[w] + u2[z])/2
+        except IndexError:
+            u2 = np.hstack((u2, (u2[w] + u2[z])/2))
+        u = u - u2
+        temp = u[E].reshape(2, self.ecnt+1, order='F')
+        ba = (temp[0] * temp[1]) >= 0
+        vec_arg = np.vstack((temp, W, ba))
+        return jnp.sum(jax.vmap(abs_diff_int, in_axes=(1))(vec_arg))
 
     def integrate_difference(self, n: int, event: bool):
 
@@ -680,20 +732,7 @@ class Graph:
         return jnp.sum(jax.vmap(abs_diff_int, in_axes=(1))(vec_arg))
  
     def jump(self, location: int):
-        vrhovi = self.E.indices[location*2:location*2+2]
-        cum = 0
-        for i in vrhovi:
-            for j in self.V[i]:
-                temp1 = self.grad[location]
-                temp2 = self.grad[j]
-                t1 = np.max(temp1) == np.inf
-                t2 = np.max(temp2) == np.inf
-                temp1[t1] = 0
-                temp1[t2] = 0
-                temp2[t1] = 0
-                temp2[t2] = 0
-                cum += np.linalg.norm(temp1 - temp2)
-        return cum
+        return self.jumpe[location]
 
     def neighbor_jump(self, location: int):
         cum = 0
@@ -705,10 +744,7 @@ class Graph:
         return cum
 
     def average_jump(self):
-        cum = 0
-        for i in range(self.ecnt):
-            cum += self.jump(i)
-        return cum / self.ecnt
+        return np.sum(self.jumpe)/self.ecnt
     
 
 class Topology:
@@ -721,26 +757,27 @@ class Topology:
                  ) -> None:
         self.nnodes = graph.shape[0]
         self.fun = fun
-        self.vfun = jax.vmap(fun)
+        self.vfun = fun
         self.coord = coord
         self.F = self.vfun(self.coord)
         self.size = graph.shape[1]
-        self.C = cond
-        self.E = ss.csr_array(graph)
-        self.G = ss.csc_array(graph)
+        self.C = np.copy(cond)
+        self.E = sparse.csr_array(graph)
+        self.G = sparse.csc_array(graph)
         self.coord = coord
         self.S = coord[self.G.indices]
         self.B = la.norm(self.S[::2] - self.S[1::2], axis=1)
-        self.D = ss.spdiags(self.C/self.B, diags=0, m=(self.E.shape[1], 
+        self.D = sparse.spdiags(self.C/self.B, diags=0, m=(self.E.shape[1], 
                                          self.E.shape[1]), format='csr')
         indptr = self.E.indptr
         indices = self.E.indices
         msgsize = np.diff(indptr)
-        self.leafs = msgsize == 1
-        self.senders = (graph.shape[1]+1)*np.ones(7*self.size, dtype=int)
-        self.receivers = (graph.shape[1]+1)*np.ones(7*self.size, dtype=int)
+        self.leafs = np.argwhere(msgsize==1)
+        self.nonleafs = np.argwhere(msgsize!=1)
+        self.senders = (graph.shape[1])*np.ones(7*self.size, dtype=int)
+        self.receivers = (graph.shape[1])*np.ones(7*self.size, dtype=int)
         cnt = 0
-
+        # TODO njit parallel
         for i in np.split(indices, indptr[1:-1]):
             l = len(i) * (len(i) - 1)
             tmp = np.meshgrid(i, i)
@@ -757,17 +794,24 @@ class Topology:
         self.features[:-1, 0] = self.coord[:, 0][self.G.indices[::2]]
         self.features[:-1, 1] = self.coord[:, 1][self.G.indices[1::2]]
         self.features[:-1, 4] = self.C[:]
+        self.o = 0
+        self.n = 0
 
     def calculate(self):
-        self.L = (self.E @ self.D @ ((self.E).T))[:-1, :-1]
-        self.u = np.hstack((ss.linalg.spsolve(self.L, self.F[:-1]), 0))
+        self.o = self.n
+        self.L = np.delete((self.E @ self.D @ ((self.E).T).todense()), self.leafs, axis=0)
+        self.L = np.delete(self.L, self.leafs, axis=1)
+        self.u = np.linalg.solve(self.L, self.F[self.nonleafs])
+        temp = np.empty(self.nnodes)
+        temp[self.leafs] = 0
+        temp[self.nonleafs] = self.u
+        self.u = temp[:]
         self.features[:-1, 2] = self.u[self.G.indices[::2]]
         self.features[:-1, 3] = self.u[self.G.indices[1::2]]
-        self.fc = (-self.u @ self.F)/(len(self.F)**2)
+        self.n = (-self.u @ self.F)/(len(self.F)**2)
         
     def increase(self, n):
         self.D[n] /= self.C[n]
         self.C[n] += 0.1
         self.D[n] *= self.C[n]
         self.features[n, 4] += 0.1
-

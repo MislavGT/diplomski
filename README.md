@@ -12,9 +12,9 @@ Code accompanying master thesis:
 
 ## Examples
 
-- 3 examples in notebooks showcasing the environments
+- examples in notebooks showcasing the environments
 
 ## Results
 
-- `params` contain weights
+- `params` folder contains weights
 - `tensorboard` contains training visuals

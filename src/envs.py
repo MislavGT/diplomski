@@ -7,6 +7,7 @@ import numpy as np
 import jax.numpy as jnp
 from .fem import Graph, Segment, Topology
 from copy import deepcopy
+from scipy.sparse.linalg import ArpackNoConvergence
 
 
 class SegmentEnv(gym.Env):
@@ -78,16 +79,13 @@ class SegmentEnv(gym.Env):
 class GraphEnv(gym.Env):
 
     def __init__(self, T):
-
         self.begin = deepcopy(T)
-        self.location = T.wrap_random()
-        self.dnc = 0
         self.cnt = 0
-        return  np.hstack((np.array([self.T.cell_jump(self.location)], dtype=float), 
-                           np.array([self.T.neighbor_jump(self.location)], dtype=float), 
-                           np.array([self.T.average_jump()], dtype=float), 
-                           np.array([self.ecnt/self.elemsno], dtype=float)
-                ))
+        self.observation_space = spaces.Box(
+            low = -np.inf * np.ones((4,)),
+            high = np.inf * np.ones((4,)),
+            dtype = float
+        )
         self.action_space = spaces.Discrete(3)
 
     def _get_obs(self):
@@ -96,7 +94,7 @@ class GraphEnv(gym.Env):
             np.array([self.T.jump(self.location)], dtype=float),
             np.array([self.T.neighbor_jump(self.location)], dtype=float),
             np.array([self.T.average_jump()], dtype=float),
-            np.array([self.T.ecnt/self.elemsno], dtype=float)
+            np.array([self.T.ecnt/ELEMSNO], dtype=float)
         ))
 
     def _get_info(self):
@@ -106,20 +104,18 @@ class GraphEnv(gym.Env):
         }
 
     def reset(self, seed=None, options=None):
-        
         self.T = deepcopy(self.begin)
-        self.dnc = 0
-        self.cnt = 10
-        for _ in range(10):
-            self.T.refine(self.T.wrap_random())
-        self.location = self.T.wrap_random()
+        self.cnt = 0
+        for i in range(4):
+            self.T.refine(i)
+        for i in range(8):
+            self.T.refine(i)
+        self.location = np.random.randint(0, self.T.ecnt)
         self.T.calculate()
-        observation = self._get_obs()
 
-        return observation
+        return self._get_obs(), self._get_info()
     
     def _refine(self, n):
-        self.dnc = 0
         integral = self.T.integrate_difference(n, True)
         return self._calc_rew(integral)
     
@@ -127,47 +123,49 @@ class GraphEnv(gym.Env):
         integral = self.T.integrate_difference(n, False)
         if not integral:
             return self._nothing()
-        self.dnc = 0
         return -self._calc_rew(integral)
         
     def _nothing(self):
-        self.dnc += 1
         return 0
     
     def _calc_rew(self, integral):
         return np.log(integral+EPSMACH) - np.log(EPSMACH)
     
     def _comp_cost(self, prev):
-        return barrier(self.T.ecnt/(ELEMSNO+1)) - barrier(prev/(ELEMSNO+1))
+        return barrier(self.T.ecnt/(ELEMSNO)) - barrier(prev/(ELEMSNO))
     
     def step(self, action):
+        self.cnt += 1
         prev = self.T.ecnt
         if action < 1:
-            if self.T.ecnt == ELEMSNO:
-                self.location = self.T.wrap_random()
-                self.dnc += 1
+            if self.T.ecnt+1 == ELEMSNO:
+                self.location = np.random.randint(0, self.T.ecnt-1)
                 self.cnt += 1
-                return self._get_obs(), EXCEED, False, self._get_info()
+                return self._get_obs(), EXCEED, False, False, self._get_info()
             integral = self._refine(self.location)
         elif action < 2:
             integral = self._coarsen(self.location)
         else:
             integral = self._nothing()
-        self.cnt += 1
         terminated = self.cnt == ACTIONS
         if not integral:
             reward = 0
         else:
             reward = integral - GAMMA * self._comp_cost(prev)
 
-        self.location = self.T.wrap_random()
-        return self._get_obs(), reward, terminated, self._get_info()
+        self.location = np.random.randint(0, self.T.ecnt-1)
+        return self._get_obs(), reward, terminated, False, self._get_info()
 
 class HeatEnv(gym.Env):
 
-    def __init__(self, design: Topology):
-        self.counter = 0
-        self.begin = deepcopy(design)
+    def __init__(self, A, fun, cond):
+        self.A = A
+        self.fun = fun
+        self.cond = cond
+        rnd = np.sort(np.random.uniform(1, 10, 4))
+        coord = np.vstack(i.flatten() for i in np.meshgrid(np.linspace(rnd[0], rnd[2], 4), 
+                                                           np.linspace(rnd[1], rnd[3], 4))).T
+        self.design = Topology(self.A, coord, self.fun, self.cond)
         self.observation_space = spaces.Box(
             low = -np.inf * np.ones(design.features.shape[0]*(design.size+1)+14*design.size,),
             high = np.inf * np.ones(design.features.shape[0]*(design.size+1)+14*design.size,),
@@ -186,21 +184,114 @@ class HeatEnv(gym.Env):
         }
 
     def reset(self, seed=None, options=None):
+        rnd = np.sort(np.random.uniform(1, 10, 4))
+        coord = np.vstack(i.flatten() for i in np.meshgrid(np.linspace(rnd[0], rnd[2], 4), 
+                                                           np.linspace(rnd[1], rnd[3], 4))).T
+        self.design = Topology(self.A, coord, self.fun, self.cond)
         self.counter = 0
-        self.design = deepcopy(self.begin)
         self.design.calculate()
         return self._get_obs(), self._get_info()
     
-    def _reward(self):
-        return (-self.design.u @ self.design.F)/(len(self.design.F)**2)
+    def reward(self):
+        return self.design.n - self.design.o
 
     def step(self, action):
-
+        if self.design.C[action] == 0.11:
+            return self._get_obs(), EXCEED, False, False, self._get_info()
         self.design.increase(action)
         self.design.calculate()
         self.counter += 1
 
-        if self.counter == 100:
-            return self._get_obs(), self._reward(), True, False, self._get_info()
+        if self.counter == DEPTH:
+            return self._get_obs(), self.reward(), True, False, self._get_info()
         
-        return self._get_obs(), 0, False, False, self._get_info()
+        return self._get_obs(), self.reward(), False, False, self._get_info()
+    
+
+class EigEnv(gym.Env):
+
+    def __init__(self, graph, coord):
+        self.ep = -1
+        self.graph = graph
+        self.coord = coord
+        self.observation_space = spaces.Box(
+            low = -np.inf * np.ones((4,)),
+            high = np.inf * np.ones((4,)),
+            dtype = float
+        )
+        self.action_space = spaces.Discrete(3)
+
+    def _get_obs(self):
+
+        return np.hstack((
+            np.array([self.T.jump(self.location)], dtype=float),
+            np.array([self.T.neighbor_jump(self.location)], dtype=float),
+            np.array([self.T.average_jump()], dtype=float),
+            np.array([self.T.ecnt/ELEMSNO], dtype=float)
+        ))
+
+    def _get_info(self):
+
+        return{
+            "elements": self.T.ecnt
+        }
+
+    def reset(self, seed=None, options=None):
+        self.ep += 1
+        self.T = Graph(self.graph, self.coord, eig=self.ep % 10) # eigenvalue number from linalg.eigs
+        self.cnt = 0
+        for i in range(self.T.ecnt):
+            self.T.refine(i)
+        self.location = np.random.randint(0, self.T.ecnt)
+        self.T.calculate_eigen()
+
+        return self._get_obs(), self._get_info()
+    
+    def _refine(self, n):
+        integral = self.T.integrate_difference_eig(n, True)
+        return self._calc_rew(integral)
+    
+    def _coarsen(self, n):
+        integral = self.T.integrate_difference_eig(n, False)
+        if not integral:
+            return self._nothing()
+        return -self._calc_rew(integral)
+        
+    def _nothing(self):
+        return 0
+    
+    def _calc_rew(self, integral):
+        return np.log(integral+EPSMACH) - np.log(EPSMACH)
+    
+    def _comp_cost(self, prev):
+        return barrier(self.T.ecnt/(ELEMSNO)) - barrier(prev/(ELEMSNO))
+    
+    def step(self, action):
+        self.cnt += 1
+        prev = self.T.ecnt
+        if action < 1:
+            if self.T.ecnt+1 == ELEMSNO:
+                self.location = np.random.randint(0, self.T.ecnt-1)
+                self.cnt += 1
+                return self._get_obs(), EXCEED, False, False, self._get_info()
+            try:
+                integral = self._refine(self.location)
+            except ArpackNoConvergence:
+                print('fail')
+                return np.array([0, 0, 0, 0]), 0, True, False, self._get_info()
+        elif action < 2:
+            try:
+                integral = self._coarsen(self.location)
+            except ArpackNoConvergence:
+                print('fail')
+                return np.array([0, 0, 0, 0]), 0, True, False, self._get_info()
+        else:
+            integral = self._nothing()
+        terminated = self.cnt == ACTIONS
+        if not integral:
+            reward = 0
+        else:
+            reward = integral - GAMMA * self._comp_cost(prev)
+
+        self.location = np.random.randint(0, self.T.ecnt-1)
+        return self._get_obs(), reward, terminated, False, self._get_info()
