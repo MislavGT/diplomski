@@ -1,9 +1,9 @@
 import numpy as np
 
 NODETOL = 1e-10
-EPSMACH = 1e-4
+EPSMACH = 1e-10
 ELEMSNO = 30
-GAMMA = 25
+GAMMA = 10
 EXCEED = -1e3
 ACTIONS = 150
 NEIGHBOR = 6

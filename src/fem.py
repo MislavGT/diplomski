@@ -650,7 +650,8 @@ class Graph:
         self.svoj, self.svi = ss.linalg.eigs(self.H, k=10, M=self.M, sigma=None, which='SM')
         sorted_indices = np.argsort(self.svoj)
         self.svoj = self.svoj[sorted_indices]
-        self.u = np.real(self.svi)[:, sorted_indices][:, self.eig]
+        self.svi = self.svi[:, sorted_indices]
+        self.u = np.real(self.svi)[:, self.eig]
         temp = self.u[self.E.indices]
         self.grad = (temp[1::2] - temp[::2]) / euclidean(self.S[:self.ecnt])
         self.jumpv = np.abs(-self.E[:self.vcnt, :self.ecnt] @ self.grad)

@@ -193,7 +193,7 @@ class HeatEnv(gym.Env):
         return self._get_obs(), self._get_info()
     
     def reward(self):
-        return self.design.n - self.design.o
+        return np.log(self.design.n - self.design.o)
 
     def step(self, action):
         if self.design.C[action] == 0.11:
