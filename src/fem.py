@@ -647,10 +647,10 @@ class Graph:
         self.M = M[:self.vcnt, :self.vcnt]
         self.H = L
         f = self.vfun(self.coord[:self.vcnt])
-        self.svoj, self.u = ss.linalg.eigs(self.H, k=10, M=self.M, sigma=None, which='SM')
+        self.svoj, self.svi = ss.linalg.eigs(self.H, k=10, M=self.M, sigma=None, which='SM')
         sorted_indices = np.argsort(self.svoj)
         self.svoj = self.svoj[sorted_indices]
-        self.u = np.real(self.u)[:, sorted_indices][:, self.eig]
+        self.u = np.real(self.svi)[:, sorted_indices][:, self.eig]
         temp = self.u[self.E.indices]
         self.grad = (temp[1::2] - temp[::2]) / euclidean(self.S[:self.ecnt])
         self.jumpv = np.abs(-self.E[:self.vcnt, :self.ecnt] @ self.grad)
@@ -757,17 +757,17 @@ class Topology:
                  ) -> None:
         self.nnodes = graph.shape[0]
         self.fun = fun
-        self.vfun = fun
+        self.vfun = jax.vmap(fun)
         self.coord = coord
         self.F = self.vfun(self.coord)
         self.size = graph.shape[1]
         self.C = np.copy(cond)
-        self.E = sparse.csr_array(graph)
-        self.G = sparse.csc_array(graph)
+        self.E = ss.csr_array(graph)
+        self.G = ss.csc_array(graph)
         self.coord = coord
         self.S = coord[self.G.indices]
         self.B = la.norm(self.S[::2] - self.S[1::2], axis=1)
-        self.D = sparse.spdiags(self.C/self.B, diags=0, m=(self.E.shape[1], 
+        self.D = ss.spdiags(self.C/self.B, diags=0, m=(self.E.shape[1], 
                                          self.E.shape[1]), format='csr')
         indptr = self.E.indptr
         indices = self.E.indices

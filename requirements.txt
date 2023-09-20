@@ -1,0 +1,15 @@
+chex==0.1.7
+dm-haiku==0.0.9
+gymnasium==0.28.1
+haiku-geometric==0.0.4
+jax==0.4.10
+matplotlib==3.7.1
+mctx==0.0.2
+muax==0.0.2.8.3
+numpy==1.23.5
+optax==0.1.5
+scipy==1.10.1
+stable-baselines3==2.1.0
+tensorboard==2.12.3
+torch==2.0.1
+

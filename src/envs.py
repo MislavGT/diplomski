@@ -165,7 +165,7 @@ class HeatEnv(gym.Env):
         rnd = np.sort(np.random.uniform(1, 10, 4))
         coord = np.vstack(i.flatten() for i in np.meshgrid(np.linspace(rnd[0], rnd[2], 4), 
                                                            np.linspace(rnd[1], rnd[3], 4))).T
-        self.design = Topology(self.A, coord, self.fun, self.cond)
+        design = Topology(self.A, coord, self.fun, self.cond)
         self.observation_space = spaces.Box(
             low = -np.inf * np.ones(design.features.shape[0]*(design.size+1)+14*design.size,),
             high = np.inf * np.ones(design.features.shape[0]*(design.size+1)+14*design.size,),
