@@ -445,6 +445,7 @@ class Graph:
             if len(self.V[i]) > mx:
                 mx = len(self.V[i])
         self.max = 2 * (mx - 1)
+        self.u = np.empty(len(self.coord))
 
     def increase(self):
 
@@ -456,6 +457,53 @@ class Graph:
         self.D.resize((self.E.shape[1], self.E.shape[1]))
         self.P = np.hstack((self.P, np.empty((self.inc,))))
         self.K.resize((self.E.shape[1], self.E.shape[1]))
+        self.u = np.hstack((self.u, np.empty(len(self.coord)-len(self.u),)))
+
+    def interpolate_refine(self, n):
+        self.u = np.hstack((self.u, np.empty(len(self.coord)-len(self.u),)))
+        vrhovi = self.E[:, [n]].indices
+        
+        if self.R:
+            vn, en = self.R.pop()
+            flag = False
+        else:
+            vn, en = self.vcnt, self.ecnt
+            if self.E.shape[0] == self.vcnt or self.E.shape[1] == self.ecnt:
+                self.increase()
+            self.vcnt += 1
+            self.ecnt += 1
+            flag = True
+
+        self.E[vn, n] = self.E[vrhovi[1], n]
+        self.E[vrhovi[1], n] = 0
+        self.E[vrhovi[1], en] = 1
+        self.E[vn, en] = -1
+        self.level[n].leaf = min(0, self.level[n].leaf)
+        self.level[n] = Node(n, None, 1, self.level[n])
+        self.V[vrhovi[1]].remove(n)
+        self.V[vrhovi[1]].append(en)
+        if flag:
+            self.level.append(Node(en, self.level[n], 1, self.level[n].parent))
+            self.V.append([n, en])
+        else:
+            self.level[en] = Node(en, self.level[n], 1, self.level[n].parent)
+            self.V[vn] = [n, en]
+        self.level[n].sib = self.level[en]
+        self.coord[vn] = (self.coord[vrhovi[0]] + self.coord[vrhovi[1]]) / 2
+        self.u[vn] = (self.u[vrhovi[0]] + self.u[vrhovi[1]]) / 2
+        self.W[n, n] /= 2
+        self.W[en, en] = self.W[n, n]
+        self.D[n, n] *= 2
+        self.D[en, en] = self.D[n, n]
+        temp = self.E[:, [n]].indices
+        self.S[n] = self.coord[temp[0]] - self.coord[temp[1]]
+        temp = self.E[:, [en]].indices
+        self.S[en] = self.coord[temp[0]] - self.coord[temp[1]]
+        self.P[vn] = self.K[n, n]
+        self.K[n, n] = self.potential((self.coord[vrhovi[0]] + self.coord[vn]) / 2)
+        self.K[en, en] = self.potential((self.coord[vrhovi[1]] 
+                                            + self.coord[vn]) / 2)
+        self.E.eliminate_zeros()
         
     def refine(self, n: int=0):
 
@@ -620,10 +668,10 @@ class Graph:
 
         self.refill()
         Eabs = np.abs(self.E)
-        L = (self.E @ self.D @ ((self.E).T))[:self.vcnt, :self.vcnt] 
-        M = (Eabs @ (self.K * self.W) @ np.abs(self.E.T))/6
+        L = (self.E @ self.W @ ((self.E).T))[:self.vcnt, :self.vcnt] 
+        M = (Eabs @ (self.K * self.D) @ np.abs(self.E.T))/6
         M += ss.spdiags(((self.P * 
-                          (Eabs @ self.W * Eabs).sum(-1))/6), diags=0, m=(self.E.shape[0], 
+                          (Eabs @ self.D * Eabs).sum(-1))/6), diags=0, m=(self.E.shape[0], 
                                          self.E.shape[0]), format='csc')
         self.M = M[:self.vcnt, :self.vcnt]
         self.H = L + self.M
@@ -639,10 +687,10 @@ class Graph:
 
         self.refill()
         Eabs = np.abs(self.E)
-        L = (self.E @ self.D @ ((self.E).T))[:self.vcnt, :self.vcnt] 
-        M = (Eabs @ (self.K * self.W) @ np.abs(self.E.T))/6
+        L = (self.E @ self.W @ ((self.E).T))[:self.vcnt, :self.vcnt] 
+        M = (Eabs @ (self.K * self.D) @ np.abs(self.E.T))/6
         M += ss.spdiags(((self.P * 
-                          (Eabs @ self.W * Eabs).sum(-1))/6), diags=0, m=(self.E.shape[0], 
+                          (Eabs @ self.D * Eabs).sum(-1))/6), diags=0, m=(self.E.shape[0], 
                                          self.E.shape[0]), format='csc')
         self.M = M[:self.vcnt, :self.vcnt]
         self.H = L
@@ -704,29 +752,30 @@ class Graph:
 
         if event:
             vrhovi = self.E[:, [n]].indices
-            u = np.hstack((self.u, (self.u[vrhovi[0]]+self.u[vrhovi[1]])/2))
+            self.u2 = np.hstack((self.u, (self.u[vrhovi[0]]+self.u[vrhovi[1]])/2))
             self.refine(n)
             self.calculate()
-            u = self.u - u
+            u = self.u - self.u2
             temp = u[self.E.indices].reshape(2, self.ecnt, order='F')
             ba = (temp[0] * temp[1]) >= 0
             vec_arg = np.vstack((temp, self.W.data[:self.ecnt], ba))
+            self.u3 = np.copy(self.u)
             return jnp.sum(jax.vmap(abs_diff_int, in_axes=(1))(vec_arg))
         W = np.copy(self.W.data[:self.ecnt])
-        u = np.copy(self.u)
+        self.u2 = np.copy(self.u)
         E = np.copy(self.E.indices)
         value_or_false = self.coarsen(n)
         if not value_or_false:
             return False
         v, i, w, z = value_or_false
         self.calculate()
-        u2 = np.copy(self.u)
+        self.u3 = np.copy(self.u)
         try:
-            u2 = np.hstack((u2, u2[v]))
-            u2[v] = (u2[w] + u2[z])/2
+            self.u3 = np.hstack((self.u3, self.u3[v]))
+            self.u3[v] = (self.u3[w] + self.u3[z])/2
         except IndexError:
-            u2 = np.hstack((u2, (u2[w] + u2[z])/2))
-        u = u - u2
+            self.u3 = np.hstack((self.u3, (self.u3[w] + self.u3[z])/2))
+        u = self.u2 - self.u3
         temp = u[E].reshape(2, self.ecnt+1, order='F')
         ba = (temp[0] * temp[1]) >= 0
         vec_arg = np.vstack((temp, W, ba))
