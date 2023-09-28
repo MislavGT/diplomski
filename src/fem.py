@@ -687,10 +687,10 @@ class Graph:
 
         self.refill()
         Eabs = np.abs(self.E)
-        L = (self.E @ self.W @ ((self.E).T))[:self.vcnt, :self.vcnt] 
-        M = (Eabs @ (self.K * self.D) @ np.abs(self.E.T))/6
+        L = (self.E @ self.D @ ((self.E).T))[:self.vcnt, :self.vcnt] 
+        M = (Eabs @ (self.K * self.W) @ np.abs(self.E.T))/6
         M += ss.spdiags(((self.P * 
-                          (Eabs @ self.D * Eabs).sum(-1))/6), diags=0, m=(self.E.shape[0], 
+                          (Eabs @ self.W * Eabs).sum(-1))/6), diags=0, m=(self.E.shape[0], 
                                          self.E.shape[0]), format='csc')
         self.M = M[:self.vcnt, :self.vcnt]
         self.H = L
